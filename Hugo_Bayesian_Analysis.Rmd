@@ -1,0 +1,1745 @@
+---
+title: "Bayesian_Data_Analysis"
+author: "Hugo Ortega-Morales"
+date: "2025-11-17"
+output:
+  pdf_document:
+    latex_engine: xelatex
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+
+
+# Abstract
+
+This report reverse-engineers the Bayesian framework employed by Steele to investigate supervision's affects on resistance training specifically if it leads to improved performance in trainees. The study analyzed a large historical dataset and a small Experimental dataset from Australian Strength Clinics to examine performance. Metrics measurement were TUL (Time Under Load), RPE (Rating of Perceived Effort)
+, and RPE (Rating of Perceived Discomfort); metrics were used in a Bayesian 2 step process involving fitting weakly informative priors onto historical data and extracting the resulting posteriors as informative priors for the Experimental process. Bayesian Statistics allows researchers to get more precise inferences using past data to inform new data, useful especially when new data is a smaller sample size. 
+
+My analysis explored prior choices, Monte Carlo Markov Chains (specifically Hamiltonian Monte Carlo), and analyzed the resulting posterior distributions following the 2 step process. Relevant findings included: (1) Self-Correcting nature of Bayesian updating where given sufficient data a wrongly overconfident prior (88% Probability of stopping at 120s ) can be correcting once fitted to the model as a posterior (4.6% Probability of stopping at 120s). (2) Significance of Informed priors for precise posterior results, and (3) importance of appropriately reflecting prior strength based on knowledge in given belief - RPE used an informed prior (assisted members would report an average of 65% effort based on knowledge) while RPD used an uninformative prior as there was no knowledge to base off. 
+
+My results corresponded to the researcher's findings that supervision effects were not practically significant in a real world setting (TUL difference: 0.08 seconds, RPE:6% difference) although the Experimental study group revealed otherwise (TUL difference: 21 seconds, RPE: 6% difference but with higher baseline effort). The use Bayesian statistics leads to the possible conclusion that participants under the Experimental group experienced a psychological effect in knowing that they were in a study that resulted in the improvement in performance seen.   
+
+
+
+
+
+# 1. Introduction: Brief Summary of Study
+
+**Article's Purpose:** Article aimed to test whether trainees under supervision led to improved session performance. 
+
+Previous research found that supervised training builds more strength because trainers push people to use heavier weights and train closer to failure. A meta-analysis showed that people tend to pick a weight and or repetition range that leads them to perform around 10-20 reps shy of momentary failure. Therefore, they believe that a trainer provides motivation and enhances trainee effort, as supported by self-reported surveys indicating that trainees perceive trainers as pushing them harder, thus aiding in reaching their goals. The author James points out that a meta-analysis shows that going to failure does lead to hypertrophy, but there is no clear relationship with strength. However, the meta-analysis was based on people who were already using an appropriate load (75-85% of 1RM). James found that the average unsupervised person chose a light weight (~53% of 1RM) and, combined with the ~10 reps, was not training optimally for strength.
+
+Thus, Steele's study investigates whether supervision solves these two problems: (1) the load selection issue, and (2) the effort issue. The article used metrics such as TUL (Time Under Load), RPE (Rating of Perceived Effort), and RPD (Rating of Perceived Discomfort), in a real-world setting. The study involved combining historical data with a new experimental study using Bayesian Methods to update beliefs and produce accurate results on how supervision impacts training effort. 
+
+The researchers gathered past data from private Kieser Australian strength clinics where all members followed personalized training programs whether with a trainer (Assisted) or alone (Core). The protocol was the same for all members; single sets on resistance machines using a 12 second repetition duration, while targeting a TUL range between 90-120 seconds before reaching muscular failure. From the large historical database, the researchers randomly sampled and filtered the historical sample to 1,751 members, consisting of 849 Core and 902 Assisted members for TUL analysis. While for RPE and RPD another separate random sample pulled.
+
+In the Experimental study group, they selected 45 Core members, who had 6+ months of experience, across 5 different clinics. Each participant completed one unsupervised and one supervised session a week apart using the same weights they had been using before participating in the study, in a way to control for weight. This would then allow the differences in TUL, RPE, and RPD to be explained by the effect of supervision. 
+
+A Bayesian approach was adopted because of the availability of a large historical dataset that can provide informative priors that could improve inference on the true effects of supervision on the small experimental sample group. MCMC sampling was used to get the posterior results of the set priors for the respective model. In the TUL and RPE analysis, weakly informative priors, made up of few custom set priors and bmrs default priors, were fitted to their respective models and the posterior results were in turn used as informative priors for the experimental phase. However, RPD was not a measurement within the historical database, hence the experimental RPD model fitted to weakly informative default ordered beta regression priors. 
+
+The researchers ultimately found that in the real-world (supported by the historical data), supervision had a negligible effect on training performance - TUL was only 0.08 seconds different between memberships (Core or Assisted), and RPE was only 6% higher under supervision.
+
+On the other hand, the experimental study yielded far different results. Supervision had an important role in improving training performance. TUL was 22 seconds longer and RPE still maintained the 6% difference but the catch is that both Core and Assisted members reported higher average effort throughout the study than that of the historical data. 
+
+In essence, the researchers aimed to find the effects of supervision in training performance and found that it is possible the improvements seen in the experimental study is strongly tied to the physiological behavior of knowing that the participants were being studied that led to a motivation effect in sessions.
+
+My goal in the proceeding report is to reverse-engineer the original code and pipeline and further understand the application of the Bayesian framework by:
+
+- reviewing and analyzing the priors
+
+- how priors are fitted to respective models
+
+- reviewing and analyzing posterior results
+
+- Bayesian Updating process
+
+
+
+# 2. Exploratory Data Analysis
+```{r setup, include=FALSE }
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = 'center')
+library(tidyverse)
+library(brms)
+library(broom.mixed)
+
+prior_data <- read.csv("data/prior_sample_data.csv",header=TRUE)
+summary(prior_data)
+```
+
+```{r, echo=FALSE}
+# Historical RPE model
+fit_rpe_historical <- readRDS("fit_rpe_historical.rds")
+post_rpe_historical <- as.data.frame(fit_rpe_historical)
+
+# Experimental RPE model
+fit_rpe_experimental <- readRDS("fitted_rpe_experimental.rds")
+post_rpe_experimental <- as.data.frame(fit_rpe_experimental)
+
+```
+
+## Time Under Load distribution vizualizations and analysis.
+
+```{r, echo=FALSE}
+boxplot(tul ~ core_assisted, data = prior_data, 
+        main = "TUL Distribution by Membership",
+        ylab = "Time Under Load (Seconds)")
+hist(prior_data$tul, breaks = 50, main= "Overall TUL distribution",
+     xlab = "TIme Under Load (Seconds)")
+```
+
+From the boxplots we can see there's not much difference among
+memberships, hardly any that are apparent. In the basic histogram, I see
+the peak at 120 seconds that the article pointed out.
+
+```{r}
+table(prior_data$core_assisted)
+sum(prior_data$tul == 120)
+
+```
+
+832 people stopped at exactly 120 seconds, suggesting that it is
+possible that some trainees stopped at 120 regardless of failure.
+
+
+## Distribution under and above 120 seconds
+
+```{r}
+prior_above_120 <- prior_data %>% filter(tul > 120)
+prior_below_120 <- prior_data %>% filter(tul < 120)
+
+ggplot(prior_above_120, aes(x = tul - 120)) +
+  geom_histogram(binwidth = 5, fill = 'red', color = 'black')+
+  labs(title = "Distribution TUL above 120", x = "Seconds above 120", y = "Frequency") + 
+  theme_minimal()
+
+ggplot(prior_below_120, aes(x = 120 - tul)) +
+  geom_histogram(binwidth = 5, fill='green', color = 'black')+
+  labs(title = "Distribution TUL below 120", x = "Seconds below 120", y = "Frequency") +
+  theme_minimal()
+```
+
+## Assisted vs Core TUL distribution
+
+```{r, echo=FALSE}
+ggplot(prior_data, aes(x=tul))+
+  geom_histogram(binwidth = 4, fill = 'orange', color = 'black')+
+  geom_vline(xintercept = c(90,123), color = 'black', linetype= "dashed")+
+  facet_wrap(~core_assisted)+
+  labs(
+    title = "Distribution of TUL", x = "Time Under Load" , y = "Frequency")+
+  theme_minimal()
+```
+
+
+## Summary stats by group
+```{r}
+#Summary stats of Assisted
+assisted_data <- prior_data %>% filter(core_assisted == 'assisted')
+summary(assisted_data)
+
+
+#Summary stats of Core
+core_data <- prior_data %>% filter (core_assisted == 'core')
+summary(core_data)
+```
+
+From the summaries, we can see both memberships are essentially identical in TUL values
+
+# 3. Understanding the Priors (TUL - Historical Data)
+
+
+## 3.1 Model Structure
+
+The researchers created model a hurdle t-model for TUL, meaning trainees
+that stopped at exactly 120s will be Bernoulli distributed to get a
+probability of stopping at 120s or not. Otherwise, if not 120 seconds, the
+probability is t distributed.
+
+```{r}
+prior_data<- prior_data %>% 
+mutate(
+  tul_centre = tul - 120)
+mean_tul <- mean(prior_data$tul_centre)
+cat("Mean of centered TUL:" , mean_tul)
+median_tul <- median(prior_data$tul_centre)
+cat("Median of centered TUL:" , median_tul)
+
+```
+
+
+```{r}
+boxplot(prior_data$tul_centre, main= "Centered TUL",
+        ylab= "Seconds from 120s",
+        col = 'orange3')
+```
+
+## 3.2 Authors' set priors
+
+In the article the researchers used the following priors:
+
+- **Baseline Intercept:** t(3, 3, 13.3)
+- **Treatment Effect:** t(3, 0, 15) with bounds [-60, 60]
+- **Hurdle Intercept:** Logistic(2, 0.1)
+- **Degrees of Freedom:** $\gamma$(2, 1)
+
+
+## 3.3 Checking bmrs
+
+To investigate whether the author's claim that they used bmrs defaults was accurate, I set up the model and used `validate_prior()` to
+see the default priors set by the software.
+```{r}
+hurdle_student_t <- custom_family(
+  "hurdle_student_t",
+  dpars = c("nu", "mu", "sigma", "hu"),
+  links = c("logm1", "identity", "log", "logit"),
+  lb = c(0, NA, 0, NA),
+  type = "real"
+)
+
+model_formula <- bf(
+  tul_centre ~ 1 + core_assisted + (1 | location) + (1 | id) + (1 | machine),
+  hu ~ 1 + core_assisted + (1 | location) + (1 | id) + (1 | machine)
+)
+
+custom_prior <- c(
+  set_prior("student_t(3, 0, 15)", class = "b", lb = -60, ub = 60)
+)
+
+validated_priors_table <- validate_prior(
+  prior = custom_prior,
+  formula = model_formula,
+  data = prior_data,
+  family = hurdle_student_t
+)
+  
+knitr::kable(validated_priors_table[1:15, c("prior", "class", "coef", "dpar", "source")])
+```
+                                    
+### Differences found
+
+Comparing the bmrs output with what the articles states:
+
+- **$\gamma_1$:** Author's code didn't set this to t(3, 0, 15) so brms used a flat prior
+
+- **$\gamma_0$:** brms uses Logistic(0, 1), article suggests Logistic(2, 0.1)
+
+- **$\nu$:** brms uses $\gamma$(2, 0.1), article suggests $\gamma$(2, 1)
+
+
+## Analyzing the priors 
+
+**Baseline Intercept: t(3, 3, 13.3)**
+
+The degrees of freedom ($\nu$) of 3 is a fixed standard choice when dealing with weakly informative priors, resulting in 
+heavier tails, making it robust to extreme values.
+
+The mean and scale factors according to the Stan Wiki page is based on the packages' algorithmic calculation.
+
+**Treatment effect: t(3, 0, 15)**
+
+The author set a custom prior t(3, 0, 15, lb = -60, up= 60) for $\beta_1$ and $\gamma_1$
+
+Mean = 0 suggests that there is no prior bias on whether a trainee under no supervision (Core) or supervision (Assisted) leads to higher
+or lower TUL results.
+
+A scale of 15 indicates that the difference between Core or Assisted could be 15 seconds in either direction.
+
+```{r}
+#Comparing SDs
+effect_sizes <- seq(-60, 60, by = 1)
+likelihood_5 <- dt(effect_sizes/5, df=3) / 5 
+likelihood_15 <- dt(effect_sizes / 15, df = 3) / 15
+likelihood_18 <- dt(effect_sizes / 18, df = 3) / 18
+likelihood_25 <- dt(effect_sizes/25, df=3) / 25 
+plot(effect_sizes, likelihood_15, type="l", lwd=2, col="blue",
+     main = "Prior Comparisons", xlab= "Treatment Effect (Core minus Assisted)",
+     ylab = "Relative Likelihood", ylim= c(0, max(likelihood_5)*1.1))
+lines(effect_sizes, likelihood_5, lwd=2, col="gray")
+lines(effect_sizes, likelihood_18, lwd=2, col="red3")
+lines(effect_sizes, likelihood_25, lwd=2, col="purple")
+legend("topright", 
+       legend = c("scale=5","scale=15", "scale=18","scale=25"),
+       col = c("gray","blue", "red3","purple"), lwd=2)
+```
+
+The gray assumes effects to be small, would suggest confidence in no difference between the two groups.
+Blue which the researchers used is wide but not too wide allowing for reasonable effects.
+Similarly to Blue, Red which is the calculated sd, is pretty negligible in difference of that of the Red.
+Purple shows if we were to choose a wide scale, implying a belief that there could be large effects.
+
+**Understanding the Scale Parameter:**
+
+For a Student-t(3, 0, 15) distribution, approximately 95% of the mass falls within:
+```{r, fig.align='left'}
+lower_15 <- qt(0.025, df=3) * 15
+upper_15 <- qt(0.975, df=3) * 15
+cat("95% of the prior mass: [", round(lower_15, 1), ",", round(upper_15, 1), "] seconds\n")
+```
+```{r, fig.width=6.5, fig.height=4}
+par(mfrow = c(1, 3))
+
+x <- seq(-80, 80, length.out = 1000)
+
+# Plot 1: Scale = 10
+lower_10 <- qt(0.025, df=3) * 10
+upper_10 <- qt(0.975, df=3) * 10
+prior_density_10 <- dt(x/10, df=3)/10
+
+plot(x, prior_density_10, type="l", lwd=3, col="blue",
+     main = "Scale = 10",
+     xlab = "Treatment Effect (seconds)", ylab = "Prior Density")
+abline(v = c(lower_10, upper_10), col="darkgreen", lty=2, lwd=2)
+abline(v = c(-60, 60), col="red", lty=1, lwd=2)
+
+# Plot 2: Scale = 15
+prior_density_15 <- dt(x/15, df=3)/15
+plot(x, prior_density_15, type="l", lwd=3, col="blue",
+     main = "Scale = 15 (Authors' Choice)",
+     xlab = "Treatment Effect (seconds)", ylab = "Prior Density")
+abline(v = c(lower_15, upper_15), col="darkgreen", lty=2, lwd=2)
+abline(v = c(-60, 60), col="red", lty=1, lwd=2)
+
+# Plot 3: Scale = 18
+lower_18 <- qt(0.025, df=3) * 18
+upper_18 <- qt(0.975, df=3) * 18
+prior_density_18 <- dt(x/18, df=3)/18
+
+plot(x, prior_density_18, type="l", lwd=3, col="blue",
+     main = "Scale = 18",
+     xlab = "Treatment Effect (seconds)", ylab = "Prior Density")
+abline(v = c(lower_18, upper_18), col="darkgreen", lty=2, lwd=2)
+abline(v = c(-60, 60), col="red", lty=1, lwd=2)
+```
+
+The scale of 15 allows for plausible effects of supervision while being wide enough to capture surprising effects, all within the [-60, 60] bounds.
+
+
+**Hurdle intercept: Logistic(2, 0.1)**
+
+Prior for the hurdle Bernoulli part of the model; this is the baseline log-odds that 
+a trainee stops at exactly 120s in the assisted group.
+
+
+```{r}
+prob_at_2 <- plogis(2)
+cat("2 on logit scale =", round(prob_at_2*100, 1), "% probability\n")
+```
+
+Authors' Prior: 
+$$P(\text{stopping at 120s} \mid \text{Assisted}) = 88\%$$
+The authors' prior suggests they believe 88% of assisted trainees stop at exactly 120s with the 0.1 sd, suggesting
+that the author is fairly certain. Making this a strong prior belief.
+
+```{r}
+p_120 <- sum(assisted_data$tul == 120) / nrow(assisted_data)
+cat(round(p_120*100, 1), "% of assisted trainees stopped at exactly 120s")
+```
+
+However, the data  reveals that 7.6% of assisted trainees stopped at 120s, so after the iterations,
+the model should be able to learn from the data and adjust the posterior.
+
+**Plotting different scale (certainty) values** 
+
+```{r, fig.align='left'}
+#Probability Values
+probs <- seq(0.5, 1, length.out = 1000)
+
+# Three different priors with different locations
+# Prior 1:  88% , but wider than what researchers used
+logit_probs <- qlogis(probs)
+density_88_wide <- dlogis(logit_probs, location = 2, scale = 0.3)
+
+# Prior 2: What the researchers used (88%, with sd = 0.1)
+density_88 <- dlogis(logit_probs, location = 2, scale = 0.1)
+
+# Prior 3: If they used observed (88% with sd 1)
+density_88_widest <- dlogis(logit_probs, location = 2, scale = .6)
+
+# All three
+plot(probs * 100, density_88_wide, 
+     type = "l", lwd = 3, col = "gray",
+     xlab = "P(Stopping at 120s)",
+     ylab = "How likely is this value",
+     main = "Comparing Prior Choices",
+     xlim = c(50, 100),
+     ylim = c(0, max(density_88) * 1.1))
+
+lines(probs * 100, density_88, lwd = 3, col = "blue")
+lines(probs * 100, density_88_widest, lwd = 3, col = "red")
+
+
+legend("left",
+       legend = c("88% wide", 
+                  "88%", 
+                  "88% widest"),
+       col = c("gray", "blue", "red"),
+       lwd = 3)
+```
+
+The plot shows how the scale value relates to certainty. The less uncertain you are, the more the values are spread.
+
+##  Proportion of people who stop at 120s
+Looking at the prior sample data:
+```{r}
+
+n_stopped_120 <- sum(prior_data$tul == 120)
+n_total <- nrow(prior_data)
+pct_stopped <- 100 * n_stopped_120 / n_total
+
+cat("Out of the", n_total, "people,", n_stopped_120, "stopped at 120s")
+cat("Percentage:", round(pct_stopped, 1), "%\n")
+cat("Did not stop:", round(100 - pct_stopped, 1), "%\n")
+
+# Core (Unsupervised)
+core_data <- prior_data[prior_data$core_assisted == "core", ]
+n_stopped_core <- sum(core_data$tul == 120)
+n_total_core <- nrow(core_data)
+pct_stopped_core <- 100 * n_stopped_core / n_total_core
+cat("Stopped at 120s:", n_stopped_core, "out of", n_total_core, "\n")
+cat("Percentange:", round(pct_stopped_core, 1), "%\n")
+cat("Did not stop:", round(100 - pct_stopped_core, 1), "%\n")
+
+# Assisted (supervised)
+assisted_data <- prior_data[prior_data$core_assisted == "assisted", ]
+n_stopped_assisted <- sum(assisted_data$tul == 120)
+n_total_assisted <- nrow(assisted_data)
+pct_stopped_assisted <- 100 * n_stopped_assisted / n_total_assisted
+
+cat("Stopped at 120s:", n_stopped_assisted, "out of", n_total_assisted, "\n")
+cat("Percentage:", round(pct_stopped_assisted, 1), "%\n")
+cat("Did NOT stop:", round(100 - pct_stopped_assisted, 1), "%\n\n")
+
+```
+
+
+```{r, fig.width=7, fig.height=5}
+
+observed <- c(pct_stopped_core, pct_stopped_assisted)
+prior_belief <- c(plogis(2)*100, NA)
+
+barplot(rbind(prior_belief, observed),
+        beside = TRUE,
+        col = c("orange", "darkgreen"),
+        names.arg = c("Core\n(Unsupervised)", "Assisted\n(Supervised)"),
+        ylab = "Percentage Stopping at 120s",
+        main = "Prior Belief vs. Actual Data",
+        ylim = c(0, 100),
+        legend.text = c("Article Prior (88%)", "Observed in Data"),
+        args.legend = list(x = "topright"))
+
+abline(h = 50, lty=2, col="black", lwd=2)
+text(1, 52, "brms default: 50%", col="black", pos=4)
+
+text(1, prior_belief[1] + 3, paste0(round(prior_belief[1], 1), "%"), 
+     col="orange", font=2)
+text(2.5, observed[1] + 3, paste0(round(observed[1], 1), "%"), 
+     col="darkgreen", font=2)
+text(5.25, observed[2] + 3, paste0(round(observed[2], 1), "%"), 
+     col="darkgreen", font=2)
+```
+
+**Prior and Posterior plot**
+
+```{r, fig.width=6, fig.height=6}
+# Visualize both logistic priors
+x <- seq(-5, 5, length.out = 1000)
+
+
+logistic_pdf <- function(x, location, scale) {
+  exp((x - location)/scale) / (scale * (1 + exp((x - location)/scale))^2)
+}
+#Prior from Article
+prior_article <- logistic_pdf(x, 2, 0.1)
+#Prior from bmrs
+prior_bmrs <- logistic_pdf(x, 0, 1)
+
+
+
+plot(x, prior_article, type="l", lwd=3, col="plum",
+     main = "Priors and Posterior for Hurdle Intercept",
+     xlab = "logit scale",
+     ylab = "Density",
+     ylim = c(0, 3))
+lines(x, prior_bmrs, lwd=3, col="darkgray")
+
+
+text(2, max(prior_article)*0.75, "88% Probability", col = 'plum4')
+text(0, max(prior_bmrs)*0.75, "50/50% Probability", col = 'gray1')
+
+legend("topright",
+       legend = c("Logistic(2, 0.1)", "Logistic(0, 1)"),
+       col = c("plum", "darkgray"),
+       lwd = 3)
+```
+
+
+**Degree of freedom ($\nu$) $\gamma$(2,1)**
+
+According to the bmrs documentation (`?set_prior`) and the Stan Prior Choice Wiki page,
+$\nu$\ ~  $\gamma$\(2, 0.1) is a recommended default option for degrees of freedom in a Student t distribution,
+as proposed and analyzed by Juarez and Steel (2010). In practice, nu is chosen to be 2<$\nu$<7.
+
+Nu is estimated to allow the data to speak for itself. A $\gamma$(2, 1) prior expects many extreme values so they don't overly influence the posteriors.
+
+I believe that the authors likely opted to use $\gamma$(2, 1) instead of $\gamma$(2, 0.1) because:
+- The raw data showed plenty of visible outliers
+- Makes the model more robust to extreme values
+- Extreme values wouldn't overly influence the results
+
+## Visually comparing both gamma priors
+```{r, fig.width=6, fig.height=6}
+par(mfrow = c(1, 2))
+
+# Compare gamma(2, 0.1) vs gamma(2, 1)
+nu_vals <- seq(0, 30, length.out = 1000)
+
+plot(nu_vals, dgamma(nu_vals, 2, 0.1), type="l", lwd=3, col="blue",
+     main = "Prior Belief of Degrees of Freedom",
+     xlab = "Degrees of Freedom",
+     ylab = "Prior Density",
+     ylim = c(0, 0.35))
+lines(nu_vals, dgamma(nu_vals, 2, 1), lwd=3, col="red")
+
+
+legend("topright",
+       legend = c("gamma(2, 0.1): brms default",
+                  "gamma(2, 1): expects heavy tails"),
+       col = c("blue", "red"),
+       lwd = 3)
+
+# how different $\nu$\ values affect tail heaviness
+x <- seq(-35, 35, length.out = 1000)
+
+plot(x, dt(x/15, df=3)/15, type="l", lwd=2, col="red",
+     main = "How $\\nu$\ Controls Tail Heaviness",
+     xlab = "TUL",
+     ylab = "Density")
+lines(x, dt(x/15, df=20)/15, lwd=2, col="blue")
+
+legend("topright",
+       legend = c("$\\nu$\ =3", "$\\nu$\ =20 "),
+       col = c("red", "blue"),
+       lwd = 3)
+```
+
+
+The blue line peaks at around 9-10 and conveys that it expects light tails with few outliers. The red line (authors' choice) conveys heavy tails with many outliers.
+
+In the second plot, the red line has visibly heavier tails and more density in the tails, meaning the red distribution is more robust to outliers.
+
+
+# 4. TUL: Historical data
+
+## 4.1 Understanding the Variability parameters
+
+The model separates the variability by the different sources of effects
+
+**Hurdle Model ($\gamma$) - Stopping at Exactly 120s:**
+
+- $\sigma_{\gamma_{0j}}$: Location Variability (clinic differences in stopping probability)
+- $\sigma_{\gamma_{0k}}$: Member Variability (individual differences in stopping tendency)
+- $\sigma_{\gamma_{0l}}$: Machine Variability (machine differences in stopping probability)
+
+**Student-t Model ($\mu$) - TUL Performance:**
+
+- $\sigma$: Residual Variability (fluctuations within the same person)
+- $\sigma_{\beta_{0j}}$: Location Variability (clinic-to-clinic differences)
+- $\sigma_{\beta_{0k}}$: Member Variability (person-to-person differences in average TUL)
+- $\sigma_{\beta_{0l}}$: Machine Variability (machine-to-machine differences)
+
+All variability parameters had the same weakly informative prior set by bmrs
+
+## 4.2 Bayesian Updating Plot
+**Bayesian Updating: Prior to Posterior**
+
+**Hurdle Intercept ($\gamma_0$) - Probability of Stopping at 120s**
+
+```{r, fig.width=6, fig.height=6}
+x <- seq(-5, 5, length.out = 1000)
+
+logistic_pdf <- function(x, location, scale) {
+  exp((x - location)/scale) / (scale * (1 + exp((x - location)/scale))^2)
+}
+
+# Prior from article
+prior_article <- logistic_pdf(x, 2, 0.1)
+
+# Prior from brms default
+prior_bmrs <- logistic_pdf(x, 0, 1)
+
+# Posterior from historical data
+posterior_hurdle <- dt((x - (-3.03))/0.12, df=3.28) / 0.12
+
+plot(x, prior_article, type="l", lwd=3, col="plum",
+     main = "Bayesian Update: Prior to Posterior for Hurdle Intercept",
+     xlab = "logit scale", ylab = "Density",
+     ylim = c(0, max(posterior_hurdle)*1.1))
+lines(x, prior_bmrs, lwd=3, col="darkgray")
+lines(x, posterior_hurdle, lwd=3, col="lightblue")
+
+# Add probability labels
+text(2, max(prior_article)*0.8, 
+     paste0("Prior: 88%\nP(stop at 120s)"), 
+     col = 'plum4', cex=0.9)
+text(0, max(prior_bmrs)*0.8, 
+     paste0("brms default: 50%"), 
+     col = 'gray20', cex=0.9)
+text(-3.03, max(posterior_hurdle)*0.8, 
+     paste0("Posterior: 4.6%\nP(stop at 120s)"), 
+     col = 'blue4', cex=0.9)
+
+legend("topright",
+       legend = c("Prior: Logistic(2, 0.1)", 
+                  "brms default: Logistic(0, 1)",
+                  "Posterior: t(3.28, -3.03, 0.12)"),
+       col = c("plum", "darkgray", "lightblue"), lwd = 3)
+```
+
+$$
+\underbrace{\text{t}(3.28, -3.03, 0.12)}_{\substack{\text{Posterior} \\ P(\text{stop at 120s}) = 4.6\%}} = \frac{\overbrace{\text{Likelihood}}^{\substack{444 \text{ out of } 5878 \\ \text{stopped at 120s} = 7.6\%}} \times \overbrace{\text{Logistic}(2, 0.1)}_{\substack{\text{Prior} \\ P(\text{stop}) = 88\%}}}{\text{Normalizing constant}}
+$$
+
+**The Bayesian Learning Process:**
+
+1. **Prior belief:** Authors believed 88% of assisted trainees would stop at 120s
+2. **Observed data:** Only 7.6% actually stopped at 120s  
+3. **Posterior belief:** After seeing 11,541 observations, updated belief is 4.6%
+
+The data strongly contradicted the prior, so the posterior moved dramatically toward 
+the observed data. This demonstrates how Bayesian inference corrects overly confident priors 
+when evidence accumulates against them.
+
+**Converting to probability scale:**
+```{r}
+cat("Prior:    plogis(2.00)  =", round(plogis(2.00)*100, 1), "%\n")
+cat("Observed: 444/5878      =", round((444/5878)*100, 1), "%\n")
+cat("Posterior: plogis(-3.03) =", round(plogis(-3.03)*100, 1), "%\n")
+```
+
+
+**Treatment Effect ($\beta_1$)**
+
+```{r, fig.width=6, fig.height=6}
+x <- seq(-50, 50, length.out = 1000)
+
+# Prior t(3,0,15)
+prior_15 <- dt((x - 0) /15, df=3) / 15
+
+
+
+plot(x, prior_15, type="l", lwd=3, col="plum",
+     main = "Treatment Effect: Prior",
+     xlab = "Effect of Core vs Assisted (seconds)", 
+     ylab = "Density",
+     ylim = c(0, max(prior_15)*1.1))
+
+
+
+
+text(-5, max(prior_15)*0.5, "Prior: very uncertain\n95% CI: [-48, +48]s", 
+     col="purple4", cex=0.9)
+
+```
+
+
+```{r}
+
+location <- 0.08
+
+
+lower <- location + qt(0.025, df=3.28) * 0.58
+upper <- location + qt(0.975, df=3.28) * 0.58
+
+cat("95% of the posterior mass: [", round(lower, 1), ",", round(upper, 1), "] seconds\n")
+
+x <- seq(-10, 10, length.out = 1000)
+posterior_density <- dt((x-0.08)/.58, df=3.28)/.58 #Posterior: t(3.28, 0.08, 0.58)
+
+
+
+
+plot(x, posterior_density, type="l", lwd=3, col="blue",
+     main = "Posterior: student_t(3.28, 0.08, 0.58)",
+     xlab = "Treatment Effect (seconds)", ylab = "Posterior Density")
+abline(v = c(lower, upper), col="red", lty=2, lwd=2)
+text(0, max(posterior_density)*0.85, 
+     paste("95% CI: [", round(lower, 1), ", ", round(upper, 1), "]"),
+     col="black", cex=1.2)
+
+
+```
+
+$$
+\underbrace{\text{Student-t}(3.28, 0.08, 0.58)}_{\substack{\text{Posterior} \\ \text{(After 11,541 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3, 0, 15)}_{\substack{\text{Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+Before seeing any data our prior belief was that the condition effect could've been anywhere from 48 seconds either way.
+After seeing data (Bayesian Process), our new belief is that the condition effect is around 2 seconds either way with moderately high certainty.
+In essence, being unsupervised showed no real impact in TUL times compared to being supervised with the mean difference being 0.08 seconds up to 2 seconds either direction. 
+
+## MY MCMC Results on historical data
+
+Number of observations: 11541
+4 chains x 20000 = 8000 post warm up samples
+
+**Member (1751 different people)**
+
+$\sigma_{\beta_{0k}}$ = t(3, 10.19, 0.24) with 95% CI [9.74, 10.66]
+
+$\sigma_{\gamma_{0k}}$ = t(3, 1.15, 0.07) with 95% CI [1.02, 1.29]
+
+People differ significantly in their TUL performance - some perform 10.19 seconds below or above their average. 
+
+**Location (27 clinics)**
+
+$\sigma_{\beta_{0j}}$ =  t(3, 3.42, 0.61) with 95% CI [2.40, 4.78]
+
+$\sigma_{\gamma_{0j}}$ =  t(3, 0.31, 0.08) with 95% CI [0.17, 0.49]
+
+Differing clinics have about a 3 second effect on average TUL performance with a negligible impact on stopping at 120s.
+
+**Machine (14 machines)**
+
+$\sigma_{\beta_{0l}}$ = t(3, 3.70, 0.92) with 95% CI [2.33, 5.88]
+
+$\sigma_{\gamma_{0l}}$ = t(3, 0.15, 0.08) with 95% CI [0.02, 0.33]
+
+Machines might have a ~4-second variation on TUL with machines almost playing no effect in someone stopping at 120s
+
+**Fixed Effects**
+
+$\beta_0$(Intercept) = t(3.28, 2.80, 1.28) with 95% CI [0.23, 5.38]
+
+People last around 122.8 seconds on average when supervised (baseline)
+
+$\gamma_0$(hu_Intercept) = t(3.28, -3.03, 0.12) with 95% CI [-3.26, -2.80]
+
+The log odds of stopping at 120s ~4.6% probability when supervised
+
+**Treatment Effects**
+
+$\beta_1$(core_assistedcore) = t(3.28, 0.08, 0.58) with 95% CI [-1.07, 1.22]
+
+Unsupervised training had no real impact on TUL compared to supervised 
+
+$\gamma_1$(hu_core_assistedcore) =  t(3.28, -0.19, 0.10) with 95% CI [-0.39, 0.01]
+
+Unsupervised trainees might be less likely to stop at exactly 120s but no real significance 
+
+**Distributional Parameters**
+
+$\nu$ = t(3, 3.29, 0.16) with 95% CI [3.01, 3.61]
+After historical data, model remain robust to outliers
+
+$\sigma$ = t(3, 10.60, 0.19) with 95% CI [10.22, 10.98]
+
+Still around a 10-11 second TUL difference within same individual, probably tied to life fluctuations.
+
+
+# 5. TUL: Experimental Study
+
+## 5.1 Author extracting priors for experimental
+
+In `R/functions.R`, the researchers fitted the model and ran MCMC resulting in posteriors which they extracted and used as informed priors for the experimental data for TUL.
+
+This was their process.
+
+```{r, eval=FALSE}
+nu <- mean(get_dpar(prepare_predictions(prior_model), dpar = "nu"))
+params <- tidy(prior_model)
+set_prior(
+  paste("student_t(", nu, ",", params$estimate[2], ",", params$std.error[2], ")"),
+  class = "Intercept",
+  dpar = "hu"
+
+priors_tul <- c(
+    # Priors for Intercepts
+    set_prior(
+      paste(
+        "student_t(",
+        nu,
+        ",",
+        params$estimate[1],
+        ",",
+        params$std.error[1],
+        ")"
+      ),
+      class = "Intercept"
+    ),
+    set_prior(
+      paste(
+        "student_t(",
+        nu,
+        ",",
+        params$estimate[2],
+        ",",
+        params$std.error[2],
+        ")"
+      ),
+      class = "Intercept",
+      dpar = "hu"
+    ),
+    
+    # Priors for core-assisted
+    set_prior(
+      paste(
+        "student_t(",
+        nu,
+        ",",
+        params$estimate[3],
+        ",",
+        params$std.error[3],
+        ")"
+      ),
+      class = "b",
+      coef = "core_assistedcore"
+    ),
+    set_prior(
+      paste(
+        "student_t(",
+        nu,
+        ",",
+        params$estimate[4],
+        ",",
+        params$std.error[4],
+        ")"
+      ),
+      class = "b",
+      coef = "core_assistedcore",
+      dpar = "hu"
+    ),
+    
+    # Priors for random effects for student_t component
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[6],
+        ",",
+        params$std.error[6],
+        ")"
+      ),
+      class = "sd",
+      coef = "Intercept",
+      group = "location"
+    ),
+    
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[5],
+        ",",
+        params$std.error[5],
+        ")"
+      ),
+      class = "sd",
+      coef = "Intercept",
+      group = "location:id"
+    ),
+    
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[7],
+        ",",
+        params$std.error[7],
+        ")"
+      ),
+      class = "sd",
+      coef = "Intercept",
+      group = "location:id:machine"
+    ),
+    
+    # Priors for random effects for hurdle component
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[9],
+        ",",
+        params$std.error[9],
+        ")"
+      ),
+      class = "sd",
+      coef = "Intercept",
+      group = "location",
+      dpar = "hu"
+    ),
+    
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[8],
+        ",",
+        params$std.error[8],
+        ")"
+      ),
+      class = "sd",
+      coef = "Intercept",
+      group = "location:id",
+      dpar = "hu"
+    ),
+    
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[10],
+        ",",
+        params$std.error[10],
+        ")"
+      ),
+      class = "sd",
+      coef = "Intercept",
+      group = "location:id:machine",
+      dpar = "hu"
+    ),
+    
+    # Priors for sigma
+    set_prior(
+      paste(
+        "student_t(3,",
+        params$estimate[11],
+        ",",
+        params$std.error[11],
+        ")"
+      ),
+      class = "sigma"
+    )
+  )
+  
+```
+
+**The simplified output of their code of the priors are as follows:**
+
+```{r}
+updated_priors_tul <- data.frame(
+  Parameter = c("$\\gamma_0$ (Hurdle Model Intercept)",
+                "$\\beta_0$ (Student t Model Intercept)",
+                "$\\gamma_1$ (Condition effects in Hurdle Model ; Core minus Assisted)",
+                "$\\beta_1$ (Condition effects in Student t model; Core minus Assisted)",
+                "$\\sigma$ (Residual Variability)",
+                "$\\sigma_location$ (Variability Hurdle Model)",
+                "$\\sigma_member$ (Variability Hurdle Model)",
+                "$\\sigma_machine$ (Variability Hurdle Model)",
+                "$\\sigma_location$ (Variability Student t Model)",
+                "$\\sigma_member$ (Variability Student t Model)",
+                "$\\sigma_machine$ (Variability Student t Model)"
+),
+Priors = c("t (3.28, -3.03, 0.12)",
+           "t (3.28, 2.79, 1.30)",
+           "t (3.28, -0.19, 0.11)",
+           "t (3.28, 0.07, 0.58)",
+           "t (3, 10.59, 0.19, lb=0)",
+           "t (3, 0.31, 0.08, lb=0)",
+           "t (3, 1.16, 0.07, lb=0)",
+           "t (3, 0.15, 0.08, lb=0)",
+           "t (3, 3.43, 0.62, lb=0)",
+           "t (3, 10.2, 0.23, lb=0)",
+           "t (3, 3.72, 0.93, lb=0)"
+))
+
+knitr::kable(updated_priors_tul, col.names = c("Parameters", "Priors"))
+```
+
+## 5.2 Experimental Data Overview
+
+```{r}
+experimental_data <- read.csv("data/data.csv", header = TRUE)
+
+
+experimental_data <- experimental_data %>% 
+  mutate(
+    tul_centre = TUL - 120,
+    core_assisted = as.factor(core_assisted),
+    location = as.factor(location),
+    id = as.factor(ID),
+    machine = as.factor(Machine)
+  )
+
+
+cat("N observations:", nrow(experimental_data), "\n")
+cat("With supervision (assisted):", sum(experimental_data$core_assisted == "assisted"), "\n")
+cat("Without supervision (core):", sum(experimental_data$core_assisted == "core"), "\n")
+
+table(experimental_data$core_assisted)
+table(experimental_data$core_assisted, experimental_data$tul_centre > 0)
+table(experimental_data$core_assisted, experimental_data$TUL == 120)
+
+# How many stopped before 120s?
+table(experimental_data$core_assisted, experimental_data$TUL < 120)
+
+# Distribution
+aggregate(TUL ~ core_assisted, data = experimental_data, summary)
+
+boxplot(tul_centre ~ core_assisted, data = experimental_data,
+        main = "Raw Data: TUL by Core Assistance",
+        ylab = "TUL (centered at 120s)")
+```
+
+
+## My MCMC Results on the Experimental Data
+
+**Members (45 people)**
+
+$\sigma_{\beta_{0k}}$ = t(3, 22.91, 3.32) with 95% CI [17.14, 30.11]
+
+$\sigma_{\gamma_{0k}}$ = t(3, 1.21, 0.13) with 95% CI [1.03, 1.53]
+
+People in the experimental group differ much more dramatically in TUL performance - about 23 seconds variation compared to 10 seconds in the historical data.
+
+**Location (5 clinics)**
+
+$\sigma_{\beta_{0j}}$ = t(3, 3.69, 1.57) with 95% CI [1.87, 6.30]
+
+$\sigma_{\gamma_{0j}}$ = t(3, 0.38, 0.14) with 95% CI [0.17, 0.73]
+
+Clinic differences remain similar to historical results (~3-4 seconds), with slightly more impact on stopping at 120s but still small overall.
+
+**Machine (15 machines)**
+
+$\sigma_{\beta_{0l}}$ = t(3, 7.64, 2.92) with 95% CI [3.93, 15.08]
+
+$\sigma_{\gamma_{0l}}$ = t(3, 0.15, 0.08) with 95% CI [0.01, 0.35]
+
+Machine variability doubled from ~4 seconds to ~8 seconds. Different machines show much larger effects in the experimental setting, though they still play a minimal role in stopping at 120s.
+
+**Fixed Effects**
+
+$\beta_0$(Intercept) = t(3.28, 24.43, 7.44) with 95% CI [12.40, 38.07]
+
+With supervision, trainees in the experimental group last much longer on average - about 144 seconds, compared to 123 seconds in the historical data. 
+
+$\gamma_0$(hu_Intercept) = t(3.28, -4.18, 0.33) with 95% CI [-4.81, -3.51]
+
+The log-odds of stopping at 120s is also around ~1.5% probability with supervision. Fewer people stop at 120s in the experimental group compared to Historical (4.6%).
+
+**Treatment Effects**
+
+$\beta_1$(core_assistedcore) = t(3.28, -21.05, 2.87) with 95% CI [-26.83, -15.45]
+
+Training unsupervised reduces TUL by about 21 seconds on average. Meanwhile, in historical data it had no effect. Being unsupervised dropped performance from ~144s to ~123s on average. 
+
+$\gamma_1$(hu_core_assistedcore) = t(3.28, 2.47, 0.50) with 95% CI [1.51, 3.45]
+
+Being unsupervised significantly increases the probability of stopping at exactly 120s. 
+
+Being supervised: 1.5% stop at 120s.  Unsupervised: 15.3% stop at 120s.
+
+**Distributional Parameters**
+
+$\nu$ = t(3, 1.46, 0.22) with 95% CI [1.13, 1.94]
+
+Degrees of freedom dropped dramatically from 3.29 to 1.46, indicating even heavier tails are needed. Experimental data
+contains more extreme values, indicating a lot more variation in performance across the experiment.
+
+$\sigma$ =  t(3, 10.86, 0.72) with 95% CI [10.27, 12.66]
+
+Residual variability remains similar to Historical (~11 seconds), representing day-to-day fluctuations.
+
+# 6. TUL Experimental Plots
+
+
+$$
+\underbrace{\text{Student-t}(3.28, -4.18, 0.33)}_{\substack{\text{Posterior} \\ \text{(After 270 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3.28, -3.03, 0.12)}_{\substack{\text{Informed Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+```{r}
+#Hurdle Intercept
+location_hurdle <- -4.18  
+scale_hurdle <- 0.33
+df_hurdle <- 3.28  
+
+
+lower_log <- location_hurdle + qt(0.025, df_hurdle) * scale_hurdle 
+upper_log <- location_hurdle + qt(0.975, df_hurdle) * scale_hurdle
+
+
+prob_mean <- plogis(location_hurdle) * 100
+prob_lower <- plogis(lower_log) * 100
+prob_upper <- plogis(upper_log) * 100
+
+cat("Log-odds 95% CI: [", round(lower_log, 2), ", ", round(upper_log, 2), "]\n")
+cat("Probability 95% CI: [", round(prob_lower, 1), "%, ", round(prob_upper, 1), "%]\n")
+cat("Mean probability: ", round(prob_mean, 1), "%\n")
+
+
+x <- seq(-6, -2, length.out = 1000)
+posterior_hurdle <- dt((x - location_hurdle)/scale_hurdle, df=df_hurdle)/scale_hurdle
+
+plot(x, posterior_hurdle, type="l", lwd=3, col="purple",
+     main = "Probability of Stopping at 120s (Assisted)",
+     xlab = "Log-Odds of Stopping", 
+     ylab = "Density",
+     ylim = c(0, max(posterior_hurdle)*1.1))
+
+text(-5, max(posterior_hurdle)*0.8, 
+     paste("Assisted (Supervised):\n", 
+           round(prob_mean, 1), "% stop at 120s\n",
+           "95% CI: [", round(prob_lower, 1), "%, ", round(prob_upper, 1), "%]"), 
+     col="black", cex=0.9)
+```
+
+
+$$
+\underbrace{\text{Student-t}(3.28, -21.05, 2.87)}_{\substack{\text{Posterior} \\ \text{(After 270 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3.28, 0.08, 0.58)}_{\substack{\text{Informed Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+```{r, echo=FALSE}
+sessions_per_participant <- experimental_data %>%
+  group_by(ID) %>%
+  summarise(
+    n_sessions = n(),
+    n_core = sum(core_assisted == "core"),
+    n_assisted = sum(core_assisted == "assisted"),
+    )
+
+summary(sessions_per_participant$n_sessions)
+
+table(sessions_per_participant$n_sessions)
+```
+
+```{r}
+# Experimental posterior for treatment effect
+location_exp <- -21.05
+scale_exp <- 2.87
+df_exp <- 3.28
+lower <- location_exp + qt(0.025, df_exp) * scale_exp 
+upper <- location_exp + qt(0.975, df_exp) * scale_exp
+
+x <- seq(-40, 0, length.out = 1000)
+posterior_exp <- dt((x - location_exp)/scale_exp, df=df_exp)/scale_exp
+
+
+plot(x, posterior_exp, type="l", lwd=3, col="orange2",
+     main = "Supervision Effect on Experimental",
+     xlab = "Treatment Effect (Core - Assisted) in seconds", 
+     ylab = "Density",
+     ylim = c(0, max(posterior_exp)*1.1))
+
+
+
+text(-15, max(posterior_exp)*0.8, 
+     paste("Experimental:\n95% CI [", round(lower, 1), ", ", round(upper, 1), "]"), 
+     col="black", cex=0.9)
+
+
+```
+
+
+
+
+
+
+```{r}
+cat("ASSISTED TUL: 144.43 [ 132.4 , 158.07 ]\n")
+cat("CORE TUL: 123.38 [ 111.14 , 137.17 ]\n")
+cat("DIFFERENCE: -21.05 [ -29.8 , -12.3 ]\n")
+```
+
+
+
+# 7. RPE Analysis
+
+Similar two step process from historical data to experimental data as TUL. 
+
+RPE was measured in two separate scales, Historical used a Borg Scale from 6-20 for the session, meanwhile the experimental data used a 0-10 scale for each exercise.
+
+Ordered Beta regression was used to be able to handle the responses at the bounds (0 and 1), while also
+accounting for the continuous values between 0 and 1.
+
+## 7.1 Priors for Historical data
+
+The authors set a custom prior for mean intercept rather than relying on the default one set by the package for the assisted condition:
+
+**Default** : $\beta_0$ ~ t(3, 0, 2.5)
+
+**Authors choice**: $\beta_0$ ~ t(3, 0.6, 2.5)
+
+```{r}
+cat("Default (logit = 0) =", round(plogis(0)*100, 1), "% effort\n")
+cat("Article (logit = 0.6) =", round(plogis(0.6)*100, 1), "% effort\n")
+```
+
+The author has a prior belief that supervised trainees are putting in a moderate to high effort in training
+therefore most likely the mean of the RPE values are around 65% effort.
+
+```{r echo=FALSE}
+prior_data_rpe <- read.csv("data/prior_sample_rpe_data.csv", header = TRUE)
+experimental_data_rpe <- read.csv("data/data.csv", header = TRUE)
+
+#Rescaling RPE [0,1]
+prior_data_rpe <- prior_data_rpe %>%
+  mutate(
+    rpe_rescaled = (session_rpe - 6) / (20 - 6)  
+  )
+experimental_data_rpe <- experimental_data_rpe %>%
+  mutate(
+    rpe_rescaled = RPE...E / 10 
+  )
+cat("In Historical Data")
+cat("Number of obs: ", nrow(prior_data_rpe))
+cat("% at 0 (no effort):", 
+    round(100 * mean(prior_data_rpe$rpe_rescaled == 0), 2), "%\n")
+cat("% at 1 (max effort):", 
+    round(100 * mean(prior_data_rpe$rpe_rescaled == 1), 2), "%\n")
+cat("% between (0,1):", 
+    round(100 * mean(prior_data_rpe$rpe_rescaled > 0 & prior_data_rpe$rpe_rescaled < 1), 2), "%\n\n")
+
+mean_rpe <- mean(prior_data_rpe$rpe_rescaled)
+median_rpe <- median(prior_data_rpe$rpe_rescaled)
+
+cat("The mean RPE is:", round(mean_rpe*100, 1), "%")
+cat("The median RPE is:", round(median_rpe*100, 1), "%")
+
+#By condition
+assisted_rpe <- prior_data_rpe %>% filter(core_assisted == "assisted")
+core_rpe <- prior_data_rpe %>% filter(core_assisted == "core")
+
+#Assisted mean and median
+mean_assisted <- mean(assisted_rpe$rpe_rescaled)
+median_assisted <- median(assisted_rpe$rpe_rescaled)
+
+cat("The mean Assisted RPE is:", round(mean_assisted*100, 1), "%")
+cat("The median Assisted RPE is:", round(median_assisted*100, 1), "%")
+
+#Core mean and median
+mean_core <- mean(core_rpe$rpe_rescaled)
+median_core <- median(core_rpe$rpe_rescaled)
+
+cat("The mean Core RPE is:", round(mean_core*100, 1), "%")
+cat("The median Core RPE is:", round(median_core*100, 1), "%")
+
+
+
+hist(assisted_rpe$rpe_rescaled, 
+     breaks = 10,
+     main = "Historical RPE for Asssisted Group",
+     xlab = "RPE (0 = no effort, 1 = max)",
+     col = "lightblue")
+abline(v = mean_assisted, col = "red", lwd = 3, lty = 2)
+abline(v = plogis(0.6), col = "blue", lwd = 3, lty = 2)
+abline(v = plogis(0), col = "gold", lwd = 3, lty = 2)
+legend("topright",
+       legend = c(paste("Observed: ", round(mean_assisted*100, 1), "%"),
+                  "Article prior: 65%",
+                  "Default prior: 50%"),
+       col = c("red", "blue", "gold"),
+       lwd = c(3, 3, 3))
+
+
+
+```
+
+The default prior at a mean = 0 (50%) wouldn't be the best choice given the information we have through simple
+analysis of the observed mean rpe for the assisted group being near 60%.
+
+
+
+
+## RPE: MCMC results on the historical data
+```{r, echo=FALSE, message=FALSE}
+# Load the saved model
+fit_rpe_historical <- readRDS("fit_rpe_historical.rds")
+post_rpe_historical <- as.data.frame(fit_rpe_historical)
+```
+
+After seeing default priors and running MCMC on the RPE model the posteriors were:
+
+**Location (28 clinics)**
+
+$\sigma_{\text{location}}$ =  t(3, 0.19, 0.04) with 95% CI [0.13, 0.27]
+
+$\sigma_{\phi,\text{location}}$ = t(3, 0.26, 0.05) with 95% CI [0.18, 0.38]
+
+Clinics differ about 0.19 on logit scale in mean RPE
+
+Clinics differ more in precision of RPE ratings
+
+**Fixed Effects**
+
+$\beta_0$(Intercept) = t(3, 0.36, 0.05) with 95% CI [0.26, 0.45]
+
+Supervised (Assisted) baseline effort around 59% of max effort
+
+$\phi_0$(phi_Intercept) = t(3, 2.01, 0.07) with 95% CI [1.87, 2.14]
+
+Precision is high, meaning more consistent RPE values 
+
+**Treatment Effects**
+
+$\beta_1$(core_assistedcore) = t(3, -0.25, 0.04) with 95% CI [-0.32, -0.18]
+
+Unsupervised training (Core) reduces RPE values by 0.25 logit scale 
+`plogis(0.36) - plogis(0.25)` ~ 53% of max effort so 6% reduction in effort.
+
+$\phi_1$(phi_core_assistedcore) =  t(3, -0.48, 0.06) with 95% CI [-0.60, -0.35]
+
+Unsupervised training (Core) reduces precision, meaning that the RPE values are more spread out/less consistent.
+
+```{r, fig.width=6, fig.height=8}
+post_rpe_historical <- as.data.frame(fit_rpe_historical)
+par(mfrow = c(1, 2))
+
+hist(post_rpe_historical$b_core_assistedcore, 
+     breaks = 50,
+     col = "blue",
+     main = "Unsupervised training effect on Mean RPE",
+     xlab = "Core - Assisted (logit scale)")
+abline(v = 0, col = "blue", lwd = 2, lty = 2)
+abline(v = mean(post_rpe_historical$b_core_assistedcore), col = "green", lwd = 3, lty= 2)
+
+# Plot treatment effect on precision
+hist(post_rpe_historical$b_phi_core_assistedcore,
+     breaks = 50,
+     col = "coral",
+     main = "Unsupervised training effect on Precision",
+     xlab = "Core - Assisted (precision scale)")
+abline(v = 0, col = "coral", lwd = 2, lty = 2)
+abline(v = mean(post_rpe_historical$b_phi_core_assistedcore), col = "green", lwd = 3, lty= 2)
+```
+
+
+
+**Baseline Effort in Supervised group (Assisted)**
+```{r}
+
+prior_location <- 0.6
+prior_scale <- 2.5
+prior_df <- 3
+
+post_location <- 0.36
+post_scale <- 0.05
+post_df <- 3
+
+
+x <- seq(-1, 1, length.out = 1000)
+
+
+prior_density <- dt((x - prior_location)/prior_scale, df=prior_df)/prior_scale
+post_density <- dt((x - post_location)/post_scale, df=post_df)/post_scale
+
+plot(x, prior_density, type="l", lwd=3, col="black",
+     main = "RPE Baseline Effort: Prior vs Posterior",
+     xlab = "Log-Odds of Effort", 
+     ylab = "Density",
+     ylim = c(0, max(post_density)*1))
+lines(x, post_density, lwd=3, col="lightblue")
+
+
+effort_percent <- round(plogis(post_location) * 100, 1)
+text(post_location, max(post_density)*0.8, 
+     paste(effort_percent, "% effort"),
+     col="blue4", cex=1.2, font=2)
+
+
+prior_effort <- round(plogis(prior_location) * 100, 1)
+text(prior_location, max(prior_density)*3.50, 
+     paste(prior_effort, "% effort"),
+     col="black", cex=1.2, font = 2)
+
+legend("topleft",
+       legend = c("Prior: t(3, 0.6, 2.5)", 
+                  "Posterior: t(3, 0.36, 0.05)"),
+       col = c("black", "lightblue"), lwd = 3)
+
+
+
+```
+
+
+
+$$
+\underbrace{\text{Student-t}(3, 0.36, 0.05)}_{\substack{\text{Posterior} \\ \text{(After 2000 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3, 0.6, 2.5)}_{\substack{\text{Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+**Condition Effect (Core - Assisted)**
+
+$$
+\underbrace{\text{Student-t}(3, -0.24, 0.04)}_{\substack{\text{Posterior} \\ \text{(After 2000 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Beta}(1,1)}_{\substack{\text{Uniform Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+
+```{r}
+post_location <- -0.25
+post_scale <- 0.04
+post_df <- 3
+
+
+x <- seq(-0.35, -0.15, length.out = 1000)
+post_density <- dt((x - post_location)/post_scale, df=post_df)/post_scale
+
+plot(x, post_density, type="l", lwd=3, col="orange2",
+     main = "No supervision on effort",
+     xlab = "Core minus Assisted (log-odds scale)", 
+     ylab = "Density")
+
+
+
+
+
+effort_reduction <- round(plogis(0.36) * 100 - plogis(0.36 + post_location) * 100, 0)
+text(post_location, max(post_density) * 0.9,
+     paste0(effort_reduction, "%\nless effort"),
+     col="black", cex=1, font=2)
+
+legend("topright", 
+       legend = paste0("Posterior: t(3, -0.24, 0.04)"),
+       col = "gold2", lwd = 3)
+
+
+```
+
+
+## RPE: After running MCMC on the experimental the results were:
+
+**Location(5 clinics)**
+
+$\sigma_{\text{location}}$ =  t(3, 0.18, 0.07) with 95% CI [0.05, 0.28]
+
+$\sigma_{\phi,\text{location}}$ = t(3, 0.26, 0.10) with 95% CI [0.10, 0.43]
+
+Very similar to the historical data
+
+**Members (45 members)**
+
+$\sigma_{\text{member}}$ = t(3, 0.48, 0.07) with 95% CI [0.35, 0.64]
+
+$\sigma_{\phi,\text{member}}$ =  t(3, 0.64, 0.24) with 95% CI [0.16, 1.10]
+
+People differ a lot in their RPE ratings
+
+**Machine (135 machines) **
+
+$\sigma_{\text{machine}}$ = t(3, 0.10, 0.07) with 95% CI [0.00, 0.27]
+
+$\sigma_{\phi,\text{machine}}$ =  t(3, 0.22, 0.17) with 95% CI [0.01, 0.62]
+
+Machine effects are very small on RPE ratings
+
+**Fixed Effects**
+
+$\beta_0$(Intercept) = t(3, 1.57, 0.15) with 95% CI [1.30, 1.83]
+
+$\phi_0$(phi_Intercept) = t(3, 3.28, 0.28) with 95% CI [2.67, 3.77]
+
+In the experimental study, supervised training led to 83% of max effort compared to the 59% in the historical data.
+Meanwhile, also having higher precision suggesting a lot of consistency in RPE ratings.
+
+**Condition Effects**
+
+$\beta_1$(core_assistedcore) = t(3, -0.33, 0.07) with 95% CI [-0.49, -0.23]
+
+$\phi_1$(phi_core_assitedcore) = t(3, -0.45, 0.09) with 95% CI [-0.61, -0.24]
+
+The experimental study showed that when training unsupervised (Core), people reported 78% of max effort - 5% less effort compared to supervised.
+Similar as reported to before, unsupervised workouts led to less consistent RPE ratings.
+
+Unsupervised training in from both datasets showed lower reported effort around 5-6% and also less consistent ratings. The experimental study revealed that the baseline (Assisted) effort was 83% while the unsupervised effort was 78%.
+
+**Baseline Effort under Supervision**
+
+```{r}
+# Informed Prior
+prior_loc <- 0.36
+prior_scale <- 0.05
+prior_df <- 3
+
+# Posterior
+post_loc <- 1.57
+post_scale <- 0.15
+post_df <- 3
+
+
+x <- seq(0, 2, length.out = 1000)
+
+
+prior_density <- dt((x - prior_loc)/prior_scale, df=prior_df)/prior_scale
+post_density <- dt((x - post_loc)/post_scale, df=post_df)/post_scale
+
+# Plot
+plot(x, post_density, type="l", lwd=3, col="red",
+     main = "Experimental: Supervised Effort",
+     xlab = "Log-Odds", ylab = "Density",
+     ylim = c(0, max(post_density)*1.1))
+lines(x, prior_density, lwd=3, col="lightblue", lty=1)
+
+
+prior_effort <- round(plogis(prior_loc) * 100, 1)
+post_effort <- round(plogis(post_loc) * 100, 1)
+
+
+text(post_loc, max(post_density) * 0.9,
+     paste(post_effort, "% effort"),
+     col="red4", cex=1.2, font=2)
+
+text(prior_loc, max(post_density) * 0.9,
+     paste(prior_effort, "% effort"),
+     col="blue4", cex=1.2, font=2)
+
+
+legend("top",
+       legend = c(paste("Prior", prior_effort, "%"),
+                  paste("Posterior", post_effort, "%")),
+       col = c("lightblue", "red"), lwd = 3)
+```
+
+$$
+\underbrace{\text{Student-t}(3, 1.57, 0.15)}_{\substack{\text{Posterior} \\ \text{(After 270 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3, 0.36, 0.05)}_{\substack{\text{Informed Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+**Condition Effect (Core - Assisted)**
+
+```{r}
+# Prior
+prior_loc <- -0.24
+prior_scale <- 0.04
+prior_df <- 3
+
+# Posterior
+post_loc <- -0.33
+post_scale <- 0.07
+post_df <- 3
+
+
+x <- seq(-0.5, -0.1, length.out = 1000)
+
+
+prior_density <- dt((x - prior_loc)/prior_scale, df=prior_df)/prior_scale
+post_density <- dt((x - post_loc)/post_scale, df=post_df)/post_scale
+
+
+plot(x, post_density, type="l", lwd=3, col="brown",
+     main = "Experimental: Supervision Effect",
+     xlab = "Core minus Assisted (log-odds)", ylab = "Density",
+     ylim = c(0, max(post_density)*1.1))
+lines(x, prior_density, lwd=3, col="orange2", lty=1)
+
+
+prior_reduction <- round(plogis(0.36) * 100 - plogis(0.36 + prior_loc) * 100, 1)
+post_reduction <- round(plogis(1.57) * 100 - plogis(1.57 + post_loc) * 100, 1)
+
+
+text(post_loc, max(post_density) * 0.9,
+     paste(post_reduction, "% less effort"),
+     col="brown4", cex=1.2, font=2)
+
+
+text(prior_loc, max(prior_density) * 1.2,
+     paste(prior_reduction, "% less effort"),
+     col="orange4", cex=1, font=2)
+
+# Add legend
+legend("topright",
+       legend = c(paste("Prior:", prior_reduction, "% less"),
+                  paste("Posterior:", post_reduction, "% less")),
+       col = c("orange2", "brown"), lwd = 3)
+```
+
+$$
+\underbrace{\text{Student-t}(3, -0.33, 0.07)}_{\substack{\text{Posterior} \\ \text{(After 2000 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3,-0.24,0.04)}_{\substack{\text{Informed Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+
+# 8. RPD Analysis
+
+Rating of Perceived Discomfort was only measured in the Experimental study due to this metric not being accounted for in the
+historical data. As a result, the the priors used were the default priors from the `ordbetareg` package rather than posterior results from historical data.
+
+RPD uses the same ordered beta regression model as RPE, where:
+
+- $\beta_0$ = t( 3, 0.6, 2.5): Baseline intercept for the assisted condition
+
+- $\beta_{\phi_0}$ = t (3, 0, 2.5): Baseline precision intercept for the assisted condition
+
+-  $\beta_1$ and $\beta_{\phi_1}$ = Uniform (-infinity, infinity): for the treatment effect
+
+- All $\sigma$: t(3, 0, 2.5): Variability components
+
+**Understanding the Uniform Prior for the treatment effects**
+
+The prior set essentially indicates that all values are equally plausible. Meaning it's giving no bias whether supervision increases or decreases 
+discomfort levels as there was no historical data to inform this prior.
+
+**RPD Exploration**
+```{r}
+experimental_data_rpd <- read.csv("data/data.csv", header = TRUE) %>%
+  mutate(rpd_rescaled = RPE...D / 10)
+
+cat("RPD Distribution:\n")
+cat("% at 0 (no discomfort):", 
+    round(100 * mean(experimental_data_rpd$rpd_rescaled == 0), 2), "%\n")
+cat("% at 1 (max discomfort):", 
+    round(100 * mean(experimental_data_rpd$rpd_rescaled == 1), 2), "%\n")
+cat("% between (0,1):", 
+    round(100 * mean(experimental_data_rpd$rpd_rescaled > 0 & 
+                       experimental_data_rpd$rpd_rescaled < 1), 2), "%\n")
+
+par(mfrow = c(1, 2))
+hist(experimental_data_rpd$rpd_rescaled, breaks = 10,
+     main = "RPD Distribution (Rescaled)",
+     xlab = "RPD (0 = no discomfort, 1 = max)",
+     col = "steelblue")
+
+boxplot(rpd_rescaled ~ core_assisted, data = experimental_data_rpd,
+        main = "RPD by Condition",
+        ylab = "RPD (rescaled 0-1)",
+        col = c("lightblue", "darkblue"))
+
+```
+
+## MCMC results on Experimental data
+
+
+**Members (45 people)**
+
+$\sigma_{\text{member}}$ = t(3, 0.84, 0.11) with 95% CI [0.65, 1.08]
+
+$\sigma_{\phi,\text{member}}$ = t(3, 0.64, 0.18) with 95% CI [0.28, 0.99]
+
+```{r}
+cat("Spread is:", round((plogis(0.97 + 0.84) - plogis(0.97 - 0.84))*100), "% across reported discomfort level\n")
+```
+
+
+People differ a lot in reported discomfort levels, with a .84 standard deviation, which on the logit scale is around 33% across individuals.
+
+**Location (5 clinics)**
+
+$\sigma_{\text{location}}$ = t(3, 0.29, 0.27) with 95% CI [0.01, 0.99]
+
+$\sigma_{\phi,\text{member}}$ = t(3, 0.35, 0.34) with 95% CI [0.01, 1.19]
+
+Clinic differences are small and uncertain.
+
+**Machine (15 machines)**
+
+$\sigma_{\text{machine}}$ = t(3, 0.25, 0.09) with 95% CI [0.11, 0.45]
+
+$\sigma_{\phi,\text{machine}}$ = t(3, 0.20, 0.17) with 95% CI [0.01, 0.65]
+
+Machine effects on discomfort level are small.
+
+**Fixed Effects:**
+
+*$\beta_0$ (Intercept)* = t(3, 0.97, 0.24) with 95% CI [0.48, 1.44]
+
+```{r}
+cat("Probability:", round(plogis(0.97)*100, 1), "% discomfort\n")
+```
+
+Supervised training resulted in 72.5% of maximum discomfort on average.
+
+*$\phi_0$ (phi_Intercept)* = t(3, 2.73, 0.31) with 95% CI [2.08, 3.31]
+
+High precision means that there were consistent discomfort ratings across supervised sessions.
+
+**Treatment Effects:**
+
+*$\beta_1$ (core_assistedcore)* = t(3, -0.54, 0.07) with 95% CI [-0.68, -0.39]
+
+```{r}
+assisted_discomfort <- plogis(0.97)
+core_discomfort <- plogis(0.97 - 0.54)
+difference <- (assisted_discomfort - core_discomfort) * 100
+
+cat("Assisted discomfort:", round(assisted_discomfort*100, 1), "%\n")
+cat("Core discomfort:", round(core_discomfort*100, 1), "%\n")
+cat("Reduction when unsupervised:", round(difference, 1), "percentage points\n")
+```
+
+Unsupervised training resulted in 12% less discomfort compared to supervised training (72.5% vs 60.6%).
+
+*$\phi_1$ (phi_core_assistedcore)* = t(3, 0.29, 0.25) with 95% CI [-0.20, 0.78]
+
+The precision difference between conditions was not significant between conditions.
+
+**Fixed Effect Bayesian Updating**
+
+```{r}
+# Prior (default)
+prior_loc <- 0
+prior_scale <- 2.5
+prior_df <- 3
+
+# Posterior
+post_loc <- 0.97
+post_scale <- 0.24
+post_df <- 3
+
+x <- seq(-1, 2, length.out = 1000)
+prior_density <- dt((x - prior_loc)/prior_scale, df=prior_df)/prior_scale
+post_density <- dt((x - post_loc)/post_scale, df=post_df)/post_scale
+
+plot(x, post_density, type="l", lwd=3, col="darkorange",
+     main = "RPD: Discomfort with Supervision",
+     xlab = "Log-Odds", ylab = "Density")
+lines(x, prior_density, lwd=3, col="gray", lty=1)
+
+
+prior_pct <- round(plogis(prior_loc)*100, 0)
+post_pct <- round(plogis(post_loc)*100, 0)
+
+text(post_loc, max(post_density)*0.9,
+     paste(post_pct, "% discomfort"),
+     col="darkorange3", cex=1.2, font=2)
+
+text(prior_loc, max(prior_density)*1.4,
+     paste("Prior:", prior_pct, "%"),
+     col="black", cex=1.2)
+```
+
+
+$$
+\underbrace{\text{Student-t}(3, 0.97, 0.05)}_{\substack{\text{Posterior} \\ \text{(After 2000 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Student-t}(3, 0, 2.5)}_{\substack{\text{Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+**Condition Effect Bayesian Updating**
+
+```{r}
+# Posterior 
+location <- -0.54
+scale <- 0.07
+df <- 3
+
+x <- seq(-0.7, -0.4, length.out = 1000)
+density <- dt((x - location)/scale, df=df)/scale
+
+plot(x, density, type="l", lwd=3, col="purple",
+     main = "RPD: Supervision Effect on Discomfort",
+     xlab = "Core minus Assisted (log-odds)", ylab = "Density")
+
+
+discomfort_reduction <- round(plogis(0.97) * 100 - plogis(0.97 + location) * 100, 1)
+text(location, max(density)*0.6,
+     paste(discomfort_reduction, "% less discomfort\nwithout supervision"),
+     col="black", cex=1.2, font=2)
+
+```
+
+$$
+\underbrace{\text{Student-t}(3, -0.54, 0.07)}_{\substack{\text{Posterior} \\ \text{(After 2000 obs)}}} = \frac{\overbrace{\text{Likelihood from data}}^{\text{What we observed}} \times \overbrace{\text{Beta}(1,1)}_{\substack{\text{Uniform Prior} \\ \text{(Before data)}}}}{\text{Normalizing constant}}
+$$
+
+
+# 9. Conclusion
+
+This analysis successfully reverse-engineered the Bayesian approach employed by Steele to investigate supervision effects on resistance training effort. I learned practical understanding of Bayesian Analysis through prior exploration, Monte Carlo Markov Chain implementation, and Bayesian Updating with real-world data. 
+
+*Key findings included:*
+
+-Self-Correcting nature of Bayesian updating: Hurdle Intercept prior showed self-correction - going from the authors prior belief of a 88% probability that assisted members stop at 120s to 4.6% once fitted to data. This suggests that in Bayesian statistics that even confident wrong priors can be corrected given sufficient data. However, it also shows the importance of selecting your priors carefully given the amount of data you have at your disposal.
+
+-Informed priors improve inference: The uncertain treatment effect prior was dramatically refined using historical data. The resulting posterior then was used as informed prior for the experimental study, allowing for stronger inference despite the smaller sample size.
+
+-RPE and RPD showed how having prior knowledge on data is an advantage. RPE had historical data to justify an informed prior that assisted members report on average a 65% effort level, on the other hand, RPD had no historical data and required the use of a uniform prior. Additionally, prior strength should reflect one's actual prior knowledge on the given subject to improve resulting inference. 
+
+
+To conclude, this report and exercise demonstrates the Bayesian process of learning from data to produce updated inferences. My findings supported the study's findings in which supervision effects were not practically significant in the real-world sense (Historical Data) having a TUL difference of 0.08 seconds and a 6% difference in RPE. However, the experimental study showed the opposite with a 22 second difference under supervision while also having higher baseline effort scores reported. 
+
+
+
+
+
+
+
+
+
+
