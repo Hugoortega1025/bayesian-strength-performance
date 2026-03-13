@@ -64,3 +64,7 @@ However, evaluation of the experimental dataset suggested that TUL had improved 
 ## Purpose
 This project was developed to gain practical experience implementing Bayesian statistical techniques on real-world performance data. The study ultimately shows how probailistic Bayesian modeling techniques can be implemented to quantify uncertainty, use prior information, and analyze training performance.
 As complementary to its statistical focus, the project also reflects a personal interest in fitness performance, motivating the application of data science methods to domains in fitness analytics and exercise science.
+
+
+## Full Report
+The complete independent project containing all detailed process, analysis, model specification, visualizations, and reslts can be found in the report.
